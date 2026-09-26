@@ -16,6 +16,12 @@ public class ProtectedEntityRenderer extends HumanoidMobRenderer<ProtectedEntity
     }
 
     @Override
+    protected float getAttackAnim(ProtectedEntity entity, float partialTicks) {
+        return Math.max(super.getAttackAnim(entity, partialTicks),
+                entity.getVisibleAttackAnimation(partialTicks));
+    }
+
+    @Override
     public ResourceLocation getTextureLocation(ProtectedEntity entity) {
         return STEVE_SKIN;
     }

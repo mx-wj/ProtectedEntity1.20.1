@@ -15,7 +15,9 @@ public final class ClientModEvents {
     @SubscribeEvent
     public static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
         event.registerEntityRenderer(ProtectedEntityMod.PROTECTED_ENTITY.get(), ProtectedEntityRenderer::new);
-        event.registerEntityRenderer(ProtectedEntityMod.TRACKING_FIREBALL.get(), context ->
+        event.registerEntityRenderer(ProtectedEntityMod.TRACKING_EGG.get(), context ->
+                new ThrownItemRenderer<>(context, 0.75F, true));
+        event.registerEntityRenderer(ProtectedEntityMod.TARGETED_ENDER_EYE.get(), context ->
                 new ThrownItemRenderer<>(context, 0.75F, true));
     }
 }

@@ -1,4 +1,5 @@
 {
   "entity.protectedentity.protected_entity": "Protected Entity",
+  "item.protectedentity.protected_entity_spawn_egg": "Protected Entity 生成蛋",
   "bossbar.protectedentity": "%2$s"
 }

@@ -1,105 +1,34 @@
 package com.mx_wj.protectedentity.entity;
 
 import com.mx_wj.protectedentity.health.HealthCalculator;
-import com.mx_wj.protectedentity.health.HealthFactory;
-import com.mx_wj.protectedentity.network.ModNetwork;
-import java.security.SecureRandom;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.Tag;
-import net.minecraft.network.chat.Component;
-import net.minecraft.server.level.ServerBossEvent;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.stats.Stats;
-import net.minecraft.world.BossEvent;
-import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
-import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
-import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomStrollGoal;
-import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.gameevent.GameEvent;
-import net.minecraftforge.common.ForgeHooks;
 
-public class ProtectedEntity extends PathfinderMob {
-    private static final long DAMAGE_COOLDOWN_NANOS = 1_000_000_000L;
-    private static final String INTERNAL_ID_TAG = "ProtectedEntityInternalId";
-    private static final String HEALTH_TAG = "ProtectedEntityHealth";
-    private static final char[] ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".toCharArray();
-    private static final SecureRandom ID_RANDOM = new SecureRandom();
-    private static final StackWalker HEALTH_WRITE_WALKER = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
-    private String internalId = "";
-    private boolean processingDamage;
-    private boolean hasAcceptedDamage;
-    private long lastAcceptedDamageNanos;
-    private final ProtectedEntityCombatAI combatAI = new ProtectedEntityCombatAI(this);
-
-    private final ServerBossEvent bossEvent = new ServerBossEvent(
-            Component.translatable("bossbar.protectedentity", this.getId(), this.getDisplayName()),
-            BossEvent.BossBarColor.RED, BossEvent.BossBarOverlay.PROGRESS);
-
-    public ProtectedEntity(EntityType<? extends ProtectedEntity> type, Level level) {
+/**
+ * Named API used by renderers and other mod systems. Runtime instances are defined
+ * from HiddenProtectedEntity bytecode by HiddenEntityFactory.
+ */
+public abstract class ProtectedEntity extends PathfinderMob {
+    protected ProtectedEntity(EntityType<? extends ProtectedEntity> type, Level level) {
         super(type, level);
-        if (!level.isClientSide) {
-            this.internalId = createInternalId();
-            HealthFactory.setHealth(this.internalId, HealthCalculator.MAX_HEALTH, false);
-        }
     }
 
-    private static String createInternalId() {
-        StringBuilder id = new StringBuilder(24);
-        for (int i = 0; i < 24; i++) {
-            id.append(ID_ALPHABET[ID_RANDOM.nextInt(ID_ALPHABET.length)]);
-        }
-        return id.toString();
-    }
+    public abstract String getInternalId();
 
-    public String getInternalId() {
-        return this.internalId == null ? "" : this.internalId;
-    }
+    public abstract void applyClientHealthSync(String internalId, float health);
 
-    public void applyClientHealthSync(String internalId, float health) {
-        if (!HealthFactory.isModClass(HEALTH_WRITE_WALKER.getCallerClass())
-                || !this.level().isClientSide || internalId == null || internalId.isEmpty()) {
-            return;
-        }
-        String previousId = this.getInternalId();
-        if (!previousId.isEmpty() && !previousId.equals(internalId)) {
-            HealthFactory.removeHealth(previousId, true);
-        }
-        this.internalId = internalId;
-        HealthFactory.setHealth(internalId, health, true);
-    }
+    public abstract void playAttackAnimation();
 
-    @Override
-    public void addAdditionalSaveData(CompoundTag tag) {
-        super.addAdditionalSaveData(tag);
-        tag.putString(INTERNAL_ID_TAG, this.getInternalId());
-        tag.putFloat(HEALTH_TAG, HealthFactory.getHealth(this.getInternalId(), this.level().isClientSide));
-    }
+    public abstract void attackAfterTeleport(LivingEntity target);
 
-    @Override
-    public void readAdditionalSaveData(CompoundTag tag) {
-        String previousId = this.getInternalId();
-        String savedId = tag.getString(INTERNAL_ID_TAG);
-        if (!savedId.isEmpty() && !savedId.equals(previousId)) {
-            if (!previousId.isEmpty()) {
-                HealthFactory.removeHealth(previousId, this.level().isClientSide);
-            }
-            this.internalId = savedId;
-        }
-        float savedHealth = tag.contains(HEALTH_TAG, Tag.TAG_ANY_NUMERIC)
-                ? tag.getFloat(HEALTH_TAG) : HealthCalculator.MAX_HEALTH;
-        String internalId = this.getInternalId();
-        if (!internalId.isEmpty()) {
-            HealthFactory.setHealth(internalId, savedHealth, this.level().isClientSide);
-        }
-        super.readAdditionalSaveData(tag);
-    }
+    abstract void onAttackHit(LivingEntity target);
+
+    public abstract float getVisibleAttackAnimation(float partialTicks);
 
     public static AttributeSupplier.Builder createAttributes() {
         return Mob.createMobAttributes()
@@ -108,146 +37,4 @@ public class ProtectedEntity extends PathfinderMob {
                 .add(Attributes.FOLLOW_RANGE, 35.0D)
                 .add(Attributes.ATTACK_DAMAGE, 6.0D);
     }
-
-    @Override
-    protected void registerGoals() {
-        this.goalSelector.addGoal(7, new WaterAvoidingRandomStrollGoal(this, 1.0D) {
-            @Override
-            public boolean canUse() {
-                return ProtectedEntity.this.getTarget() == null && super.canUse();
-            }
-
-            @Override
-            public boolean canContinueToUse() {
-                return ProtectedEntity.this.getTarget() == null && super.canContinueToUse();
-            }
-        });
-        this.goalSelector.addGoal(8, new LookAtPlayerGoal(this, Player.class, 8.0F));
-        this.goalSelector.addGoal(8, new RandomLookAroundGoal(this));
-    }
-
-    @Override
-    public void tick() {
-        super.tick();
-        if (!this.level().isClientSide && this.isAlive()) {
-            this.combatAI.tick();
-        }
-    }
-
-    @Override
-    public boolean removeWhenFarAway(double distanceToClosestPlayer) {
-        return false;
-    }
-
-    @Override
-    public void startSeenByPlayer(ServerPlayer player) {
-        super.startSeenByPlayer(player);
-        this.bossEvent.setProgress(HealthCalculator.progress(
-                HealthFactory.getHealthValue(this.getInternalId(), false), this.getMaxHealth()));
-        this.bossEvent.addPlayer(player);
-        ModNetwork.sendToPlayer(player, this);
-    }
-
-    @Override
-    public void stopSeenByPlayer(ServerPlayer player) {
-        super.stopSeenByPlayer(player);
-        this.bossEvent.removePlayer(player);
-    }
-
-    @Override
-    public float getHealth() {
-        String internalId = this.getInternalId();
-        return internalId.isEmpty() ? 0.0F : HealthFactory.getHealth(internalId, this.level().isClientSide);
-    }
-
-    @Override
-    public float getMaxHealth() {
-        return HealthCalculator.MAX_HEALTH;
-    }
-
-    @Override
-    public final boolean hurt(DamageSource source, float amount) {
-        if (this.processingDamage || this.isDamageCoolingDown()) {
-            return false;
-        }
-        return super.hurt(source, amount);
-    }
-
-    @Override
-    protected final synchronized void actuallyHurt(DamageSource source, float amount) {
-        if (this.level().isClientSide || this.processingDamage || this.isDamageCoolingDown()) {
-            return;
-        }
-        this.processingDamage = true;
-        try {
-            if (this.isInvulnerableTo(source)) {
-                return;
-            }
-            float damage = HealthCalculator.reducedDamage(amount);
-            if (!Float.isFinite(damage) || damage <= 0.0F) {
-                return;
-            }
-            damage = this.getDamageAfterArmorAbsorb(source, damage);
-            damage = this.getDamageAfterMagicAbsorb(source, damage);
-            if (!Float.isFinite(damage) || damage <= 0.0F) {
-                return;
-            }
-            float absorption = this.getAbsorptionAmount();
-            float healthDamage = Math.max(damage - absorption, 0.0F);
-            float absorbedDamage = damage - healthDamage;
-            this.setAbsorptionAmount(absorption - absorbedDamage);
-            if (absorbedDamage > 0.0F && absorbedDamage < Float.MAX_VALUE
-                    && source.getEntity() instanceof ServerPlayer player) {
-                player.awardStat(Stats.DAMAGE_DEALT_ABSORBED, Math.round(absorbedDamage * 10.0F));
-            }
-            if (!Float.isFinite(healthDamage) || healthDamage <= 0.0F) {
-                return;
-            }
-            float healthBeforeHit = this.getHealth();
-            float limitedHealth = HealthCalculator.limitDamage(healthBeforeHit, healthBeforeHit - healthDamage);
-            if (limitedHealth < healthBeforeHit) {
-                float appliedDamage = healthBeforeHit - limitedHealth;
-                this.getCombatTracker().recordDamage(source, appliedDamage);
-                String internalId = this.getInternalId();
-                if (!internalId.isEmpty()) {
-                    HealthFactory.setHealth(internalId, limitedHealth, false);
-                    if (this.isAddedToWorld()) {
-                        ModNetwork.sendToTracking(this);
-                    }
-                }
-                this.setAbsorptionAmount(this.getAbsorptionAmount() - appliedDamage);
-                this.gameEvent(GameEvent.ENTITY_DAMAGE);
-                if (this.getHealth() < healthBeforeHit) {
-                    this.lastAcceptedDamageNanos = System.nanoTime();
-                    this.hasAcceptedDamage = true;
-                }
-            }
-        } finally {
-            this.processingDamage = false;
-        }
-    }
-
-    private boolean isDamageCoolingDown() {
-        return this.hasAcceptedDamage
-                && System.nanoTime() - this.lastAcceptedDamageNanos < DAMAGE_COOLDOWN_NANOS;
-    }
-
-    @Override
-    public Component getDisplayName() {
-        return Component.translatable("entity.protectedentity.protected_entity");
-    }
-
-    @Override
-    public boolean shouldShowName() {
-        return true;
-    }
-
-    @Override
-    public boolean hasCustomName() {
-        return true;
-    }
-
-    @Override
-    @Deprecated
-    public final void setHealth(float health) {}
 }
