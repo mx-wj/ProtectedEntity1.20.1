@@ -27,7 +27,9 @@ public final class ProtectedBossBarOverlay {
     private static final int BAR_WIDTH = 256;
     private static final int BAR_HEIGHT = 32;
     private static final int FILL_WIDTH = 208;
-    private static final int BAR_Y_OFFSET = -8;
+    private static final int BAR_Y_OFFSET = -4;
+    private static final int NAME_Y_OFFSET = -7;
+    private static final int BAR_INCREMENT = 36;
 
     private ProtectedBossBarOverlay() {
     }
@@ -52,7 +54,7 @@ public final class ProtectedBossBarOverlay {
         }
 
         event.setCanceled(true);
-        event.setIncrement(48);
+        event.setIncrement(BAR_INCREMENT);
 
         GuiGraphics graphics = event.getGuiGraphics();
         int x = (graphics.guiWidth() - BAR_WIDTH) / 2;
@@ -79,6 +81,7 @@ public final class ProtectedBossBarOverlay {
 
         var font = Minecraft.getInstance().font;
         var name = event.getBossEvent().getName();
-        graphics.drawString(font, name, (graphics.guiWidth() - font.width(name)) / 2, y - 10, 0xFFFFFF);
+        graphics.drawString(font, name, (graphics.guiWidth() - font.width(name)) / 2,
+                y + NAME_Y_OFFSET, 0xFFFFFF);
     }
 }
