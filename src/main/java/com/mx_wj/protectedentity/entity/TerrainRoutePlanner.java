@@ -17,13 +17,15 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 final class TerrainRoutePlanner {
     private static final int SEARCH_RADIUS = 14;
     private static final int SEARCH_HEIGHT = 24;
     private static final int MAX_DESCENT_HEIGHT = 64;
+    private static final int NATURAL_DESCENT_RADIUS = 6;
+    private static final int MAX_NATURAL_DESCENT_NODES = 64;
     private static final int MAX_VISITED = 1024;
-    private static final double PILLAR_HORIZONTAL_RANGE = 2.0D;
     private final ArrayDeque<BlockPos> detour = new ArrayDeque<>();
     private BlockPos detourGoal;
     private List<BlockPos> levelRoute = List.of();
@@ -31,22 +33,31 @@ final class TerrainRoutePlanner {
 
     Step nextStep(ProtectedEntity mob, LivingEntity target, boolean canModifyTerrain, boolean aggressive) {
         Level level = mob.level();
-        BlockPos start = mob.blockPosition();
+        BlockPos start = groundPosition(mob);
         BlockPos goal = targetGroundPosition(target);
         PriorityQueue<RouteNode> open = new PriorityQueue<>(Comparator
                 .comparingDouble(RouteNode::remainingDistance).thenComparingDouble(RouteNode::cost));
         Map<BlockPos, Double> bestCosts = new HashMap<>();
         Set<BlockPos> visited = new HashSet<>();
         RouteNode origin = new RouteNode(start, 0.0D, estimate(start, goal), null, null, Map.of());
-        double horizontalX = target.getX() - mob.getX();
-        double horizontalZ = target.getZ() - mob.getZ();
-        if (goal.getY() > start.getY()
-                && horizontalX * horizontalX + horizontalZ * horizontalZ <= PILLAR_HORIZONTAL_RANGE * PILLAR_HORIZONTAL_RANGE) {
+        // Reuse a completed stair before considering another jump-and-build pillar.
+        Step existingAscent = forwardAscent(level, origin, goal, false);
+        if (existingAscent != null) {
+            this.clearRoute();
+            return existingAscent;
+        }
+        // Gain height underfoot before constructing forward/diagonal stairs for a higher target.
+        if (goal.getY() > start.getY()) {
             Step pillar = inspect(level, origin, start.above(), goal);
             if (pillar != null && (canModifyTerrain || pillar.edits().isEmpty())) {
                 this.clearRoute();
                 return pillar;
             }
+        }
+        Step naturalDescent = this.naturalDescent(level, origin, goal);
+        if (naturalDescent != null) {
+            this.clearRoute();
+            return naturalDescent;
         }
         Step descendingStep = this.descent(level, origin, goal, canModifyTerrain);
         if (descendingStep != null) {
@@ -196,7 +207,7 @@ final class TerrainRoutePlanner {
     }
 
     static BlockPos targetGroundPosition(LivingEntity target) {
-        BlockPos feet = target.blockPosition();
+        BlockPos feet = groundPosition(target);
         if (target.onGround()) return feet;
         Level level = target.level();
         for (int depth = 1; depth <= 4; depth++) {
@@ -207,27 +218,54 @@ final class TerrainRoutePlanner {
         return feet;
     }
 
+    static BlockPos groundPosition(LivingEntity entity) {
+        BlockPos feet = entity.blockPosition();
+        Level level = entity.level();
+        BlockState state = level.getBlockState(feet);
+        // On a path/slab, floor(Y) is the supporting block, not the space above it.
+        if (supports(level, feet, state)
+                && Math.abs(entity.getY() - (feet.getY() + supportHeight(level, feet, state))) < 0.001D) {
+            return feet.above();
+        }
+        return feet;
+    }
+
+    static double standingY(Level level, BlockPos feet) {
+        BlockPos support = feet.below();
+        BlockState state = level.getBlockState(support);
+        return supports(level, support, state)
+                ? support.getY() + supportHeight(level, support, state) : feet.getY();
+    }
+
     boolean canWalkDirectlyTo(ProtectedEntity mob, LivingEntity target) {
-        if (targetGroundPosition(target).getY() != mob.blockPosition().getY()) return false;
+        BlockPos origin = groundPosition(mob);
+        if (targetGroundPosition(target).getY() != origin.getY()) return false;
         Level level = mob.level();
         double offsetX = target.getX() - mob.getX();
         double offsetZ = target.getZ() - mob.getZ();
         int samples = Math.max(1, (int)Math.ceil(Math.sqrt(offsetX * offsetX + offsetZ * offsetZ) * 4.0D));
         double halfWidth = mob.getBbWidth() / 2.0D - 0.01D;
+        double previousY = mob.getY();
         for (int sample = 0; sample <= samples; sample++) {
             double progress = (double)sample / samples;
             double centerX = mob.getX() + offsetX * progress;
             double centerZ = mob.getZ() + offsetZ * progress;
+            double surfaceY = Double.NEGATIVE_INFINITY;
             for (int cornerX = -1; cornerX <= 1; cornerX += 2) {
                 for (int cornerZ = -1; cornerZ <= 1; cornerZ += 2) {
                     BlockPos support = BlockPos.containing(centerX + cornerX * halfWidth,
-                            mob.getY() - 0.1D, centerZ + cornerZ * halfWidth);
+                            origin.getY() - 1, centerZ + cornerZ * halfWidth);
                     if (!canEdit(level, support) || !canEdit(level, support.above(2))
                             || !supports(level, support, level.getBlockState(support))) return false;
+                    surfaceY = Math.max(surfaceY, support.getY()
+                            + supportHeight(level, support, level.getBlockState(support)));
                 }
             }
-            AABB body = mob.getBoundingBox().move(offsetX * progress, 0.0D, offsetZ * progress).deflate(0.001D);
+            if (Math.abs(surfaceY - previousY) > mob.getStepHeight() + 0.001D) return false;
+            AABB body = mob.getBoundingBox().move(offsetX * progress, surfaceY - mob.getY(),
+                    offsetZ * progress).deflate(0.001D);
             if (level.getBlockCollisions(mob, body).iterator().hasNext()) return false;
+            previousY = surfaceY;
         }
         return true;
     }
@@ -278,6 +316,49 @@ final class TerrainRoutePlanner {
         }
         return preferred;
     }
+
+    private Step naturalDescent(Level level, RouteNode origin, BlockPos goal) {
+        BlockPos start = origin.position();
+        if (goal.getY() >= start.getY()) return null;
+        ArrayDeque<WalkNode> open = new ArrayDeque<>();
+        Set<BlockPos> visited = new HashSet<>();
+        open.add(new WalkNode(start, null));
+        visited.add(start);
+        while (!open.isEmpty() && visited.size() <= MAX_NATURAL_DESCENT_NODES) {
+            WalkNode current = open.removeFirst();
+            RouteNode routeNode = current.position().equals(start) ? origin
+                    : new RouteNode(current.position(), 0.0D, estimate(current.position(), goal),
+                            null, null, Map.of());
+            for (Direction direction : Direction.Plane.HORIZONTAL) {
+                BlockPos adjacent = current.position().relative(direction);
+                if (Math.abs(adjacent.getX() - start.getX()) > NATURAL_DESCENT_RADIUS
+                        || Math.abs(adjacent.getZ() - start.getZ()) > NATURAL_DESCENT_RADIUS) continue;
+                for (int drop = 1; drop <= 3; drop++) {
+                    BlockPos landing = adjacent.below(drop);
+                    if (landing.getY() < goal.getY()) break;
+                    Step step = inspect(level, routeNode, landing, goal);
+                    if (step != null && step.edits().isEmpty()) {
+                        return current.firstStep() == null ? step : current.firstStep();
+                    }
+                }
+            }
+            for (Direction direction : Direction.Plane.HORIZONTAL) {
+                BlockPos adjacent = current.position().relative(direction);
+                if (Math.abs(adjacent.getX() - start.getX()) > NATURAL_DESCENT_RADIUS
+                        || Math.abs(adjacent.getZ() - start.getZ()) > NATURAL_DESCENT_RADIUS
+                        || visited.contains(adjacent)) continue;
+                Step step = inspect(level, routeNode, adjacent, goal);
+                if (step != null && step.edits().isEmpty()) {
+                    visited.add(adjacent);
+                    open.addLast(new WalkNode(adjacent,
+                            current.firstStep() == null ? step : current.firstStep()));
+                }
+            }
+        }
+        return null;
+    }
+
+    private record WalkNode(BlockPos position, Step firstStep) {}
 
     List<BlockPos> previewRunway(ProtectedEntity mob, LivingEntity target, Step activeStep, int length) {
         BlockPos goal = targetGroundPosition(target);
@@ -373,7 +454,7 @@ final class TerrainRoutePlanner {
         if (!canEdit(level, pos)) return false;
         BlockState state = stateAt(level, current, edits, pos);
         if (!state.getCollisionShape(level, pos).isEmpty()) {
-            if (state.getDestroySpeed(level, pos) < 0.0F || state.hasBlockEntity()) return false;
+            if (!canBreak(level, pos, state)) return false;
             edits.add(new Edit(pos, Action.BREAK));
         }
         if (!state.getFluidState().isEmpty()) {
@@ -397,8 +478,25 @@ final class TerrainRoutePlanner {
                 && level.getWorldBorder().isWithinBounds(pos);
     }
 
+    static boolean canBreak(Level level, BlockPos pos, BlockState state) {
+        return !state.hasBlockEntity()
+                && (state.getDestroySpeed(level, pos) >= 0.0F || state.is(Blocks.BEDROCK));
+    }
+
     static boolean supports(Level level, BlockPos pos, BlockState state) {
-        return state.isFaceSturdy(level, pos, Direction.UP) || state.getFluidState().is(FluidTags.WATER);
+        if (state.isFaceSturdy(level, pos, Direction.UP) || state.getFluidState().is(FluidTags.WATER)) return true;
+        VoxelShape shape = state.getCollisionShape(level, pos);
+        if (shape.isEmpty()) return false;
+        double top = shape.max(Direction.Axis.Y);
+        if (top < 0.5D || top > 1.0D) return false;
+        // A full-width flat collision surface supports feet even below the block's top face.
+        return shape.toAabbs().stream().anyMatch(box -> box.minX <= 0.0D && box.minZ <= 0.0D
+                && box.maxX >= 1.0D && box.maxZ >= 1.0D && box.maxY == top);
+    }
+
+    private static double supportHeight(Level level, BlockPos pos, BlockState state) {
+        if (state.getFluidState().is(FluidTags.WATER)) return 1.0D;
+        return state.getCollisionShape(level, pos).max(Direction.Axis.Y);
     }
 
     private static double estimate(BlockPos position, BlockPos goal) {
@@ -410,7 +508,9 @@ final class TerrainRoutePlanner {
 
     record Step(BlockPos from, BlockPos destination, List<Edit> edits) {
         boolean isPillar() {
-            return this.destination.equals(this.from.above());
+            return this.destination.getX() == this.from.getX()
+                    && this.destination.getZ() == this.from.getZ()
+                    && this.destination.getY() > this.from.getY();
         }
     }
 

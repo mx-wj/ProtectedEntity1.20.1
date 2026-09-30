@@ -6,7 +6,7 @@ final class IdleStrollGoal extends WaterAvoidingRandomStrollGoal {
     private final ProtectedEntity mob;
 
     IdleStrollGoal(ProtectedEntity mob) {
-        super(mob, 1.0D);
+        super(mob, ProtectedEntity.WALK_SPEED_MODIFIER);
         this.mob = mob;
     }
 

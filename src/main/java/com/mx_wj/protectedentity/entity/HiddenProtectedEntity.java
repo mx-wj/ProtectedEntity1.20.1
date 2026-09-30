@@ -31,7 +31,6 @@ final class HiddenProtectedEntity extends ProtectedEntity {
     private static final String HEALTH_TAG = "ProtectedEntityHealth";
     private static final char[] ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".toCharArray();
     private static final SecureRandom ID_RANDOM = new SecureRandom();
-    private static final StackWalker HEALTH_WRITE_WALKER = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
     private static final EntityDataAccessor<Integer> ATTACK_SEQUENCE =
             SynchedEntityData.defineId(HiddenProtectedEntity.class, EntityDataSerializers.INT);
     private String internalId = "";
@@ -66,7 +65,7 @@ final class HiddenProtectedEntity extends ProtectedEntity {
     }
 
     public void applyClientHealthSync(String internalId, float health) {
-        if (!HealthFactory.isModClass(HEALTH_WRITE_WALKER.getCallerClass())
+        if (!HealthFactory.isAuthorizedCaller()
                 || !this.level().isClientSide || internalId == null || internalId.isEmpty()) {
             return;
         }

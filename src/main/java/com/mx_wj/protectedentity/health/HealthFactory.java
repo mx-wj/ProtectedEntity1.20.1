@@ -3,11 +3,13 @@ package com.mx_wj.protectedentity.health;
 import java.security.CodeSource;
 import java.security.SecureRandom;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class HealthFactory {
     private static final String MOD_PACKAGE = "com.mx_wj.protectedentity.";
-    private static final StackWalker CALLER_WALKER = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
+    private static final StackWalker CALLER_WALKER = StackWalker.getInstance(Set.of(
+            StackWalker.Option.RETAIN_CLASS_REFERENCE, StackWalker.Option.SHOW_HIDDEN_FRAMES));
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Map<String, HealthValue> SERVER_HEALTH = new ConcurrentHashMap<>();
     private static final Map<String, HealthValue> CLIENT_HEALTH = new ConcurrentHashMap<>();
@@ -25,7 +27,7 @@ public final class HealthFactory {
     }
 
     public static void setHealth(String internalId, float health, boolean clientSide) {
-        if (isModClass(CALLER_WALKER.getCallerClass()) && internalId != null && !internalId.isEmpty()) {
+        if (isAuthorizedCaller() && internalId != null && !internalId.isEmpty()) {
             int randomA = RANDOM.nextInt();
             int randomB = RANDOM.nextInt();
             int checkValue = HealthCalculator.checkValue(health, internalId, randomA, randomB);
@@ -37,9 +39,18 @@ public final class HealthFactory {
     }
 
     public static void removeHealth(String internalId, boolean clientSide) {
-        if (isModClass(CALLER_WALKER.getCallerClass())) {
+        if (isAuthorizedCaller()) {
             healthMap(clientSide).remove(internalId);
         }
+    }
+
+    /** Checks the immediate caller of the guarded method invoking this helper. */
+    public static boolean isAuthorizedCaller() {
+        // getCallerClass() ALWAYS hides hidden classes, even with SHOW_HIDDEN_FRAMES.
+        // Skip this helper and the guarded method, retaining the real entity callback.
+        // Do not scan deeper: a mod frame further up must not authorize an external writer.
+        return CALLER_WALKER.walk(frames -> frames.skip(2).findFirst()
+                .map(frame -> isModClass(frame.getDeclaringClass())).orElse(false));
     }
 
     public static boolean isModClass(Class<?> caller) {

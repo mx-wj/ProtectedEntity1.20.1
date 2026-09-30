@@ -29,8 +29,9 @@ public final class HiddenEntityFactory {
             if (stream == null) {
                 throw new IllegalStateException("Missing hidden protected entity bytecode");
             }
+            byte[] bytecode = HiddenClassNoise.addTo(stream.readAllBytes());
             MethodHandles.Lookup lookup = MethodHandles.lookup().defineHiddenClass(
-                    stream.readAllBytes(), true, MethodHandles.Lookup.ClassOption.STRONG);
+                    bytecode, true, MethodHandles.Lookup.ClassOption.STRONG);
             Class<? extends ProtectedEntity> entityClass =
                     lookup.lookupClass().asSubclass(ProtectedEntity.class);
             return lookup.findConstructor(entityClass,
